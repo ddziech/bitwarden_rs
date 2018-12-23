@@ -423,7 +423,6 @@ fn send_invite(org_id: String, data: JsonUpcase<InviteData>, headers: AdminHeade
         };
 
         // Don't create UserOrganization in virtual organization
-        let mut org_user_id = None;
         let mut new_user = UserOrganization::new(user.uuid.clone(), org_id.clone());
         let access_all = data.AccessAll.unwrap_or(false);
         new_user.access_all = access_all;
@@ -443,9 +442,8 @@ fn send_invite(org_id: String, data: JsonUpcase<InviteData>, headers: AdminHeade
         }
 
         new_user.save(&conn)?;
-        org_user_id = Some(new_user.uuid.clone());
 
-        if CONFIG.mail.is_some() {
+        if let Some(ref mail_config) = CONFIG.mail {
             use crate::mail;
             use chrono::{Duration, Utc};
             let time_now = Utc::now().naive_utc();
@@ -456,22 +454,15 @@ fn send_invite(org_id: String, data: JsonUpcase<InviteData>, headers: AdminHeade
                 sub: user.uuid.to_string(),
                 email: email.clone(),
                 org_id: org_id.clone(),
-                user_org_id: org_user_id.clone(),
+                user_org_id: Some(new_user.uuid.clone()),
             };
             let org_name = match Organization::find_by_uuid(&org_id, &conn) {
                 Some(org) => org.name,
                 None => err!("Error looking up organization")
             };
             let invite_token = encode_jwt(&claims);
-            if let Some(ref mail_config) = CONFIG.mail {
-                if let Err(e) = mail::send_invite(&email, &org_id, &org_user_id.unwrap_or(Organization::VIRTUAL_ID.to_string()), 
-                                                  &invite_token, &org_name, mail_config) {
-                    err!(format!("There has been a problem sending the email: {}", e))
-                }
-            }
+            mail::send_invite(&email, &org_id, &new_user.uuid, &invite_token, &org_name, mail_config)?;
         }
-
-        new_user.save(&conn)?;
     }
 
     Ok(())
