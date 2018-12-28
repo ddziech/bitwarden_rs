@@ -1,9 +1,9 @@
 CREATE TABLE twofactor (
-  uuid      TEXT     NOT NULL PRIMARY KEY,
-  user_uuid TEXT     NOT NULL REFERENCES users (uuid),
+  uuid      VARCHAR(255)     NOT NULL PRIMARY KEY,
+  user_uuid VARCHAR(255)     NOT NULL REFERENCES users (uuid),
   type      INTEGER  NOT NULL,
   enabled   BOOLEAN  NOT NULL,
-  data      TEXT     NOT NULL,
+  data      VARCHAR(255)     NOT NULL,
 
   UNIQUE (user_uuid, type)
 );

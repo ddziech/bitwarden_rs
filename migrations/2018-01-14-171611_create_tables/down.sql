@@ -1,9 +1,9 @@
-DROP TABLE users;
+DROP TABLE `users`;
 
-DROP TABLE devices;
+DROP TABLE `devices`;
 
-DROP TABLE ciphers;
+DROP TABLE `ciphers`;
 
-DROP TABLE attachments;
+DROP TABLE `attachments`;
 
-DROP TABLE folders;
+DROP TABLE `folders`;

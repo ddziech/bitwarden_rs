@@ -126,9 +126,9 @@ fn check_db() {
     }
 
     // Turn on WAL in SQLite
-    use diesel::RunQueryDsl;
-    let connection = db::get_connection().expect("Can't conect to DB");
-    diesel::sql_query("PRAGMA journal_mode=wal").execute(&connection).expect("Failed to turn on WAL");
+//    use diesel::RunQueryDsl;
+//    let connection = db::get_connection().expect("Can't conect to DB");
+//    diesel::sql_query("PRAGMA journal_mode=wal").execute(&connection).expect("Failed to turn on WAL");
 }
 
 fn check_rsa_keys() {

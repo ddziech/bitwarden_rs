@@ -1,8 +1,8 @@
-DROP TABLE collections;
+DROP TABLE `collections`;
 
-DROP TABLE organizations;
+DROP TABLE `organizations`;
 
 
-DROP TABLE users_collections;
+DROP TABLE `users_collections`;
 
-DROP TABLE users_organizations;
+DROP TABLE `users_organizations`;

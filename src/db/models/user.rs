@@ -92,9 +92,11 @@ impl User {
     }
 
     pub fn set_password(&mut self, password: &str) {
+        println!("hasło = {}", password);
         self.password_hash = crypto::hash_password(password.as_bytes(),
                                                    &self.salt,
                                                    self.password_iterations as u32);
+        println!("hasło2 = {:?}", self.password_hash);
     }
 
     pub fn reset_security_stamp(&mut self) {

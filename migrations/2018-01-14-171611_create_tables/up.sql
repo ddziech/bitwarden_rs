@@ -1,62 +1,61 @@
 CREATE TABLE users (
-  uuid                TEXT     NOT NULL PRIMARY KEY,
-  created_at          DATETIME NOT NULL,
-  updated_at          DATETIME NOT NULL,
-  email               TEXT     NOT NULL UNIQUE,
-  name                TEXT     NOT NULL,
-  password_hash       BLOB     NOT NULL,
-  salt                BLOB     NOT NULL,
-  password_iterations INTEGER  NOT NULL,
-  password_hint       TEXT,
-  key                 TEXT     NOT NULL,
-  private_key         TEXT,
-  public_key          TEXT,
-  totp_secret         TEXT,
-  totp_recover        TEXT,
-  security_stamp      TEXT     NOT NULL,
-  equivalent_domains  TEXT     NOT NULL,
-  excluded_globals    TEXT     NOT NULL
+  `uuid`                 VARCHAR(255)     NOT NULL PRIMARY KEY,
+  `created_at`           DATETIME NOT NULL,
+  `updated_at`           DATETIME NOT NULL,
+  `email`                VARCHAR(255)     NOT NULL UNIQUE,
+  `name`                 VARCHAR(255)     NOT NULL,
+  `password_hash`        BLOB     NOT NULL,
+  `salt`                 BLOB     NOT NULL,
+  `password_iterations`  INTEGER  NOT NULL,
+  `password_hint`        VARCHAR(255),
+  `key`                 VARCHAR(255)     NOT NULL,
+  `private_key`          VARCHAR(255),
+  `public_key`           VARCHAR(255),
+  `totp_secret`          VARCHAR(255),
+  `totp_recover`         VARCHAR(255),
+  `security_stamp`       VARCHAR(255)     NOT NULL,
+  `equivalent_domains`   VARCHAR(255)     NOT NULL,
+  `excluded_globals`     VARCHAR(255)     NOT NULL
 );
 
 CREATE TABLE devices (
-  uuid          TEXT     NOT NULL PRIMARY KEY,
-  created_at    DATETIME NOT NULL,
-  updated_at    DATETIME NOT NULL,
-  user_uuid     TEXT     NOT NULL REFERENCES users (uuid),
-  name          TEXT     NOT NULL,
-  type          INTEGER  NOT NULL,
-  push_token    TEXT,
-  refresh_token TEXT     NOT NULL
+  `uuid`          VARCHAR(255)     NOT NULL PRIMARY KEY,
+  `created_at`    DATETIME NOT NULL,
+  `updated_at`    DATETIME NOT NULL,
+  `user_uuid`     VARCHAR(255)     NOT NULL REFERENCES users (uuid),
+  `name`          VARCHAR(255)     NOT NULL,
+  `type`          INTEGER  NOT NULL,
+  `push_token`    VARCHAR(255),
+  `refresh_token` VARCHAR(255)     NOT NULL
 );
 
 CREATE TABLE ciphers (
-  uuid              TEXT     NOT NULL PRIMARY KEY,
-  created_at        DATETIME NOT NULL,
-  updated_at        DATETIME NOT NULL,
-  user_uuid         TEXT     NOT NULL REFERENCES users (uuid),
-  folder_uuid       TEXT REFERENCES folders (uuid),
-  organization_uuid TEXT,
-  type              INTEGER  NOT NULL,
-  name              TEXT     NOT NULL,
-  notes             TEXT,
-  fields            TEXT,
-  data              TEXT     NOT NULL,
-  favorite          BOOLEAN  NOT NULL
+  `uuid`              VARCHAR(255)     NOT NULL PRIMARY KEY,
+  `created_at`        DATETIME NOT NULL,
+  `updated_at`        DATETIME NOT NULL,
+  `user_uuid`         VARCHAR(255)     NOT NULL REFERENCES users (uuid),
+  `folder_uuid`       VARCHAR(255) REFERENCES folders (uuid),
+  `organization_uuid` VARCHAR(255),
+  `type`              INTEGER  NOT NULL,
+  `name`              VARCHAR(255)     NOT NULL,
+  `notes`             VARCHAR(255),
+  `fields`            VARCHAR(255),
+  `data`              VARCHAR(255)     NOT NULL,
+  `favorite`          BOOLEAN  NOT NULL
 );
 
 CREATE TABLE attachments (
-  id          TEXT    NOT NULL PRIMARY KEY,
-  cipher_uuid TEXT    NOT NULL REFERENCES ciphers (uuid),
-  file_name   TEXT    NOT NULL,
-  file_size   INTEGER NOT NULL
+  `id`          VARCHAR(255)    NOT NULL PRIMARY KEY,
+  `cipher_uuid` VARCHAR(255)    NOT NULL REFERENCES ciphers (`uuid`),
+  `file_name`   VARCHAR(255)    NOT NULL,
+  `file_size`   INTEGER NOT NULL
 
 );
 
 CREATE TABLE folders (
-  uuid       TEXT     NOT NULL PRIMARY KEY,
+  uuid       VARCHAR(255)     NOT NULL PRIMARY KEY,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
-  user_uuid  TEXT     NOT NULL REFERENCES users (uuid),
-  name       TEXT     NOT NULL
+  user_uuid  VARCHAR(255)     NOT NULL REFERENCES users (uuid),
+  name       VARCHAR(255)     NOT NULL
 );
-  

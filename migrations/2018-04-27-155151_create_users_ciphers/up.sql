@@ -1,25 +1,25 @@
-ALTER TABLE ciphers RENAME TO oldCiphers;
+ALTER TABLE `ciphers` RENAME TO oldCiphers;
 
-CREATE TABLE ciphers (
-  uuid              TEXT     NOT NULL PRIMARY KEY,
-  created_at        DATETIME NOT NULL,
-  updated_at        DATETIME NOT NULL,
-  user_uuid         TEXT     REFERENCES users (uuid), -- Make this optional
-  organization_uuid TEXT     REFERENCES organizations (uuid), -- Add reference to orgs table
+CREATE TABLE `ciphers` (
+  `uuid`              VARCHAR(255)     NOT NULL PRIMARY KEY,
+  `created_at`        DATETIME NOT NULL,
+  `updated_at`        DATETIME NOT NULL,
+  `user_uuid`         VARCHAR(255)     REFERENCES users (uuid), -- Make this optional
+  `organization_uuid` VARCHAR(255)     REFERENCES organizations (uuid), -- Add reference to orgs table
   -- Remove folder_uuid
-  type              INTEGER  NOT NULL,
-  name              TEXT     NOT NULL,
-  notes             TEXT,
-  fields            TEXT,
-  data              TEXT     NOT NULL,
-  favorite          BOOLEAN  NOT NULL
+  `type`              INTEGER  NOT NULL,
+  `name`              VARCHAR(255)     NOT NULL,
+  `notes`             VARCHAR(255),
+  `fields`            VARCHAR(255),
+  `data`              VARCHAR(255)     NOT NULL,
+  `favorite`          BOOLEAN  NOT NULL
 );
 
-CREATE TABLE folders_ciphers (
-  cipher_uuid TEXT NOT NULL REFERENCES ciphers (uuid),
-  folder_uuid TEXT NOT NULL REFERENCES folders (uuid),
+CREATE TABLE `olders_ciphers` (
+  `cipher_uuid` VARCHAR(255) NOT NULL REFERENCES ciphers (uuid),
+  `folder_uuid` VARCHAR(255) NOT NULL REFERENCES folders (uuid),
 
-  PRIMARY KEY (cipher_uuid, folder_uuid)
+  PRIMARY KEY (`cipher_uuid`, `folder_uuid`)
 );
 
 INSERT INTO ciphers (uuid, created_at, updated_at, user_uuid, organization_uuid, type, name, notes, fields, data, favorite) 

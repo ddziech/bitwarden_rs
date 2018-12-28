@@ -1,1 +1,1 @@
-DROP TABLE ciphers_collections;
+DROP TABLE `ciphers_collections`;
