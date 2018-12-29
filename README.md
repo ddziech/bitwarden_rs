@@ -39,6 +39,7 @@ _*Note, that this project is not associated with the [Bitwarden](https://bitward
   - [SMTP configuration](#smtp-configuration)
   - [Password hint display](#password-hint-display)
   - [Disabling or overriding the Vault interface hosting](#disabling-or-overriding-the-vault-interface-hosting)
+  - [Logging](#logging)
   - [Other configuration](#other-configuration)
   - [Fail2Ban Setup](#fail2ban-setup)
     - [Logging Failed Login Attempts to Syslog](#logging-failed-login-attempts-to-syslog)
@@ -390,7 +391,7 @@ Note that if SMTP and invitations are enabled, invitations will be sent to new u
 ```sh
 docker run -d --name bitwarden \
 ...
--e DOMAIN=https://vault.example.com
+-e DOMAIN=https://vault.example.com \
 ...
 ```
 
@@ -431,33 +432,34 @@ docker run -d --name bitwarden \
 
 Note that you can also change the path where bitwarden_rs looks for static files by providing the `WEB_VAULT_FOLDER` environment variable with the path.
 
+### Logging
+
+Logging to a file is supported as of 1.5.0. You can specify the path to the log file with the `LOG_FILE` environment variable:
+
+```sh
+docker run -d --name bitwarden \
+...
+  -e LOG_FILE=/data/bitwarden.log \
+...
+```
+
+Note that if you're using the docker image, you'll most likely want to use a file path that is mounted from the host OS (such as the data folder).
+
 ### Other configuration
 
 Though this is unlikely to be required in small deployment, you can fine-tune some other settings like number of workers using environment variables that are processed by [Rocket](https://rocket.rs), please see details in [documentation](https://rocket.rs/guide/configuration/#environment-variables).
 
 ### Fail2Ban Setup
 
-Bitwarden_rs logs failed login attempts to stdout. We need to set this so the host OS can see these. Then we can setup Fail2Ban.
+As of release 1.5.0, bitwarden_rs supports logging to file. See [Logging](#logging) above for information on how to set this up.
 
-#### Logging Failed Login Attempts to Syslog
+#### Logging Failed Login Attempts
 
-We need to set the logging driver to syslog so the host OS and Fail2Ban can see them.
+After specifying the log file location, failed login attempts will appear in the logs in the following format:
 
-If you are using docker commands, you will need to add: `--log-driver syslog --log-opt tag=$TAG` to your command.
-
-If you are using docker-compose, add this to you yaml file:
 ```
-  bitwarden:
-    logging:
-      driver: "syslog"
-      options:
-        tag: "$TAG"
+[YYYY-MM-DD hh:mm:ss][bitwarden_rs::api::identity][ERROR] Username or password is incorrect. Try again. IP: XXX.XXX.XXX.XXX. Username: email@domain.com.
 ```
-With the above settings in the docker-compose file. Any failed login attempts will look like this in your syslog file:
-```
-MMM DD hh:mm:ss server-hostname $TAG[773]: [YYYY-MM-DD][hh:mm:ss][bitwarden_rs::api::identity][ERROR] Username or password is incorrect. Try again. IP: XXX.XXX.XXX.XXX. Username: email@domain.com.
-```
-You can change the '$TAG' to anything you like. Just remember it because it will be in the Fail2Ban filter.
 
 #### Fail2Ban Filter
 
@@ -471,11 +473,9 @@ And add the following
 before = common.conf
 
 [Definition]
-_daemon = $TAG
-failregex = ^%(__prefix_line)s.*Username or password is incorrect\. Try again\. IP: <HOST>\. Username:.*$
+failregex = ^.*Username or password is incorrect\. Try again\. IP: <HOST>\. Username:.*$
 ignoreregex =
 ```
-Dont forget to change the '$TAG' to what you set it as from above.
 
 #### Fail2Ban Jail
 
@@ -490,7 +490,8 @@ enabled = true
 port = 80,443,8081
 filter = bitwarden
 action = iptables-allports[name=bitwarden]
-logpath = /var/log/syslog
+logpath = /path/to/bitwarden/log
+backend = polling
 maxretry = 3
 bantime = 14400
 findtime = 14400
@@ -676,7 +677,7 @@ docker run -d --name bitwarden \
 
 ### Changing user email
 
-Because we don't have any SMTP functionality at the moment, there's no way to deliver the verification token when you try to change the email. User just needs to enter any random token to continue and the change will be applied.
+Email verification has not yet been implemented, so users just need to enter any random token to continue and the change will be applied.
 
 ### Creating organization
 
@@ -684,9 +685,15 @@ We use upstream Vault interface directly without any (significant) changes, this
 
 ### Inviting users into organization
 
-The invited users won't get the invitation email, instead all already registered users will appear in the interface as if they already accepted the invitation. Organization admin then just needs to confirm them to be proper Organization members and to give them access to the shared secrets.
+#### With SMTP enabled
 
-Invited users, that aren't registered yet will show up in the Organization admin interface as "Invited". At the same time an invitation record is created that allows the users to register even if [user registration is disabled](#disable-registration-of-new-users). (unless you [disable this functionality](#disable-invitations)) They will automatically become "Accepted" once they register. From there Organization admin can confirm them to give them access to Organization.
+Invited users will receive an email containing a link that is valid for 5 days. Upon clicking the link, users can choose to create an account or log in. New users will need to create a new account; existing users who are being invited to a new organization will simply need to log in. After either step, they will show up as "Accepted" in the admin interface, and will be added to the organization when an orgnization admin confirms them.
+
+#### Without SMTP enabled
+
+The invited users won't get an invitation email; instead all already registered users will appear in the interface as if they already accepted the invitation. Organization admin then just needs to confirm them to be proper Organization members and to give them access to the shared secrets.
+
+Invited users that aren't registered yet will show up in the Organization admin interface as "Invited". At the same time an invitation record is created that allows the users to register even if [user registration is disabled](#disable-registration-of-new-users). (unless you [disable this functionality](#disable-invitations)) They will automatically become "Accepted" once they register. From there Organization admin can confirm them to give them access to Organization.
 
 ### Running on unencrypted connection
 
