@@ -1,16 +1,19 @@
-use rocket::State;
 use rocket::request::Form;
 use rocket_contrib::json::Json;
 use serde_json::Value;
 
-use crate::CONFIG;
-use crate::db::DbConn;
 use crate::db::models::*;
+use crate::db::DbConn;
+use crate::CONFIG;
 
-use crate::api::{PasswordData, JsonResult, EmptyResult, NumberOrString, JsonUpcase, WebSocketUsers, UpdateType};
-use crate::auth::{Headers, AdminHeaders, OwnerHeaders, encode_jwt, decode_invite_jwt, InviteJWTClaims, JWT_ISSUER};
+use crate::api::{EmptyResult, JsonResult, JsonUpcase, Notify, NumberOrString, PasswordData, UpdateType};
+use crate::auth::{decode_invite_jwt, encode_jwt, AdminHeaders, Headers, InviteJWTClaims, OwnerHeaders, JWT_ISSUER};
+
+use crate::mail;
 
 use serde::{Deserialize, Deserializer};
+
+use chrono::{Duration, Utc};
 
 use rocket::Route;
 
@@ -37,6 +40,7 @@ pub fn routes() -> Vec<Route> {
         get_org_details,
         get_org_users,
         send_invite,
+        reinvite_user,
         confirm_invite,
         accept_invite,
         get_user,
@@ -44,11 +48,9 @@ pub fn routes() -> Vec<Route> {
         put_organization_user,
         delete_user,
         post_delete_user,
-        post_reinvite_user,
         post_org_import,
     ]
 }
-
 
 #[derive(Deserialize)]
 #[allow(non_snake_case)]
@@ -79,32 +81,28 @@ fn create_organization(headers: Headers, data: JsonUpcase<OrgData>, conn: DbConn
     let data: OrgData = data.into_inner().data;
 
     let mut org = Organization::new(data.Name, data.BillingEmail);
-    let mut user_org = UserOrganization::new(
-        headers.user.uuid.clone(), org.uuid.clone());
-    let mut collection = Collection::new(
-        org.uuid.clone(), data.CollectionName);
+    let mut user_org = UserOrganization::new(headers.user.uuid.clone(), org.uuid.clone());
+    let mut collection = Collection::new(org.uuid.clone(), data.CollectionName);
 
     user_org.key = data.Key;
     user_org.access_all = true;
     user_org.type_ = UserOrgType::Owner as i32;
     user_org.status = UserOrgStatus::Confirmed as i32;
 
-    if org.save(&conn).is_err() {
-        err!("Failed creating organization")
-    }
-    if user_org.save(&conn).is_err() {
-        err!("Failed to add user to organization")
-    }
-
-    if collection.save(&conn).is_err() {
-        err!("Failed creating Collection");
-    }
+    org.save(&conn)?;
+    user_org.save(&conn)?;
+    collection.save(&conn)?;
 
     Ok(Json(org.to_json()))
 }
 
 #[delete("/organizations/<org_id>", data = "<data>")]
-fn delete_organization(org_id: String, data: JsonUpcase<PasswordData>, headers: OwnerHeaders, conn: DbConn) -> EmptyResult {
+fn delete_organization(
+    org_id: String,
+    data: JsonUpcase<PasswordData>,
+    headers: OwnerHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     let data: PasswordData = data.into_inner().data;
     let password_hash = data.MasterPasswordHash;
 
@@ -114,15 +112,17 @@ fn delete_organization(org_id: String, data: JsonUpcase<PasswordData>, headers: 
 
     match Organization::find_by_uuid(&org_id, &conn) {
         None => err!("Organization not found"),
-        Some(org) => match org.delete(&conn) {
-            Ok(()) => Ok(()),
-            Err(_) => err!("Failed deleting the organization")
-        }
+        Some(org) => org.delete(&conn),
     }
 }
 
 #[post("/organizations/<org_id>/delete", data = "<data>")]
-fn post_delete_organization(org_id: String, data: JsonUpcase<PasswordData>, headers: OwnerHeaders, conn: DbConn) -> EmptyResult {
+fn post_delete_organization(
+    org_id: String,
+    data: JsonUpcase<PasswordData>,
+    headers: OwnerHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     delete_organization(org_id, data, headers, conn)
 }
 
@@ -132,19 +132,15 @@ fn leave_organization(org_id: String, headers: Headers, conn: DbConn) -> EmptyRe
         None => err!("User not part of organization"),
         Some(user_org) => {
             if user_org.type_ == UserOrgType::Owner {
-                let num_owners = UserOrganization::find_by_org_and_type(
-                    &org_id, UserOrgType::Owner as i32, &conn)
-                    .len();
+                let num_owners =
+                    UserOrganization::find_by_org_and_type(&org_id, UserOrgType::Owner as i32, &conn).len();
 
                 if num_owners <= 1 {
                     err!("The last owner can't leave")
                 }
             }
-            
-            match user_org.delete(&conn) {
-                Ok(()) => Ok(()),
-                Err(_) => err!("Failed leaving the organization")
-            }
+
+            user_org.delete(&conn)
         }
     }
 }
@@ -153,37 +149,44 @@ fn leave_organization(org_id: String, headers: Headers, conn: DbConn) -> EmptyRe
 fn get_organization(org_id: String, _headers: OwnerHeaders, conn: DbConn) -> JsonResult {
     match Organization::find_by_uuid(&org_id, &conn) {
         Some(organization) => Ok(Json(organization.to_json())),
-        None => err!("Can't find organization details")
+        None => err!("Can't find organization details"),
     }
 }
 
 #[put("/organizations/<org_id>", data = "<data>")]
-fn put_organization(org_id: String, headers: OwnerHeaders, data: JsonUpcase<OrganizationUpdateData>, conn: DbConn) -> JsonResult {
+fn put_organization(
+    org_id: String,
+    headers: OwnerHeaders,
+    data: JsonUpcase<OrganizationUpdateData>,
+    conn: DbConn,
+) -> JsonResult {
     post_organization(org_id, headers, data, conn)
 }
 
 #[post("/organizations/<org_id>", data = "<data>")]
-fn post_organization(org_id: String, _headers: OwnerHeaders, data: JsonUpcase<OrganizationUpdateData>, conn: DbConn) -> JsonResult {
+fn post_organization(
+    org_id: String,
+    _headers: OwnerHeaders,
+    data: JsonUpcase<OrganizationUpdateData>,
+    conn: DbConn,
+) -> JsonResult {
     let data: OrganizationUpdateData = data.into_inner().data;
 
     let mut org = match Organization::find_by_uuid(&org_id, &conn) {
         Some(organization) => organization,
-        None => err!("Can't find organization details")
+        None => err!("Can't find organization details"),
     };
 
     org.name = data.Name;
     org.billing_email = data.BillingEmail;
 
-    match org.save(&conn) {
-        Ok(()) => Ok(Json(org.to_json())),
-        Err(_) => err!("Failed to modify organization")
-    }
+    org.save(&conn)?;
+    Ok(Json(org.to_json()))
 }
 
 // GET /api/collections?writeOnly=false
 #[get("/collections")]
 fn get_user_collections(headers: Headers, conn: DbConn) -> JsonResult {
-
     Ok(Json(json!({
         "Data":
             Collection::find_by_user_uuid(&headers.user.uuid, &conn)
@@ -209,40 +212,54 @@ fn get_org_collections(org_id: String, _headers: AdminHeaders, conn: DbConn) -> 
 }
 
 #[post("/organizations/<org_id>/collections", data = "<data>")]
-fn post_organization_collections(org_id: String, _headers: AdminHeaders, data: JsonUpcase<NewCollectionData>, conn: DbConn) -> JsonResult {
+fn post_organization_collections(
+    org_id: String,
+    _headers: AdminHeaders,
+    data: JsonUpcase<NewCollectionData>,
+    conn: DbConn,
+) -> JsonResult {
     let data: NewCollectionData = data.into_inner().data;
 
     let org = match Organization::find_by_uuid(&org_id, &conn) {
         Some(organization) => organization,
-        None => err!("Can't find organization details")
+        None => err!("Can't find organization details"),
     };
 
     let mut collection = Collection::new(org.uuid.clone(), data.Name);
-
-    if collection.save(&conn).is_err() {
-        err!("Failed saving Collection");
-    }
+    collection.save(&conn)?;
 
     Ok(Json(collection.to_json()))
 }
 
 #[put("/organizations/<org_id>/collections/<col_id>", data = "<data>")]
-fn put_organization_collection_update(org_id: String, col_id: String, headers: AdminHeaders, data: JsonUpcase<NewCollectionData>, conn: DbConn) -> JsonResult {
+fn put_organization_collection_update(
+    org_id: String,
+    col_id: String,
+    headers: AdminHeaders,
+    data: JsonUpcase<NewCollectionData>,
+    conn: DbConn,
+) -> JsonResult {
     post_organization_collection_update(org_id, col_id, headers, data, conn)
 }
 
 #[post("/organizations/<org_id>/collections/<col_id>", data = "<data>")]
-fn post_organization_collection_update(org_id: String, col_id: String, _headers: AdminHeaders, data: JsonUpcase<NewCollectionData>, conn: DbConn) -> JsonResult {
+fn post_organization_collection_update(
+    org_id: String,
+    col_id: String,
+    _headers: AdminHeaders,
+    data: JsonUpcase<NewCollectionData>,
+    conn: DbConn,
+) -> JsonResult {
     let data: NewCollectionData = data.into_inner().data;
 
     let org = match Organization::find_by_uuid(&org_id, &conn) {
         Some(organization) => organization,
-        None => err!("Can't find organization details")
+        None => err!("Can't find organization details"),
     };
 
     let mut collection = match Collection::find_by_uuid(&col_id, &conn) {
         Some(collection) => collection,
-        None => err!("Collection not found")
+        None => err!("Collection not found"),
     };
 
     if collection.org_uuid != org.uuid {
@@ -250,22 +267,27 @@ fn post_organization_collection_update(org_id: String, col_id: String, _headers:
     }
 
     collection.name = data.Name.clone();
-    if collection.save(&conn).is_err() {
-        err!("Failed updating Collection");
-    }
+    collection.save(&conn)?;
 
     Ok(Json(collection.to_json()))
 }
 
-
 #[delete("/organizations/<org_id>/collections/<col_id>/user/<org_user_id>")]
-fn delete_organization_collection_user(org_id: String, col_id: String, org_user_id: String, _headers: AdminHeaders, conn: DbConn) -> EmptyResult {
+fn delete_organization_collection_user(
+    org_id: String,
+    col_id: String,
+    org_user_id: String,
+    _headers: AdminHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     let collection = match Collection::find_by_uuid(&col_id, &conn) {
         None => err!("Collection not found"),
-        Some(collection) => if collection.org_uuid == org_id {
-            collection
-        } else {
-            err!("Collection and Organization id do not match")
+        Some(collection) => {
+            if collection.org_uuid == org_id {
+                collection
+            } else {
+                err!("Collection and Organization id do not match")
+            }
         }
     };
 
@@ -274,19 +296,20 @@ fn delete_organization_collection_user(org_id: String, col_id: String, org_user_
         Some(user_org) => {
             match CollectionUser::find_by_collection_and_user(&collection.uuid, &user_org.user_uuid, &conn) {
                 None => err!("User not assigned to collection"),
-                Some(col_user) => {
-                    match col_user.delete(&conn) {
-                        Ok(()) => Ok(()),
-                        Err(_) => err!("Failed removing user from collection")
-                    }
-                }
+                Some(col_user) => col_user.delete(&conn),
             }
         }
     }
 }
 
 #[post("/organizations/<org_id>/collections/<col_id>/delete-user/<org_user_id>")]
-fn post_organization_collection_delete_user(org_id: String, col_id: String, org_user_id: String, headers: AdminHeaders, conn: DbConn) -> EmptyResult {
+fn post_organization_collection_delete_user(
+    org_id: String,
+    col_id: String,
+    org_user_id: String,
+    headers: AdminHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     delete_organization_collection_user(org_id, col_id, org_user_id, headers, conn)
 }
 
@@ -294,13 +317,12 @@ fn post_organization_collection_delete_user(org_id: String, col_id: String, org_
 fn delete_organization_collection(org_id: String, col_id: String, _headers: AdminHeaders, conn: DbConn) -> EmptyResult {
     match Collection::find_by_uuid(&col_id, &conn) {
         None => err!("Collection not found"),
-        Some(collection) => if collection.org_uuid == org_id {
-            match collection.delete(&conn) {
-                Ok(()) => Ok(()),
-                Err(_) => err!("Failed deleting collection")
+        Some(collection) => {
+            if collection.org_uuid == org_id {
+                collection.delete(&conn)
+            } else {
+                err!("Collection and Organization id do not match")
             }
-        } else {
-            err!("Collection and Organization id do not match")
         }
     }
 }
@@ -313,7 +335,13 @@ struct DeleteCollectionData {
 }
 
 #[post("/organizations/<org_id>/collections/<col_id>/delete", data = "<_data>")]
-fn post_organization_collection_delete(org_id: String, col_id: String, headers: AdminHeaders, _data: JsonUpcase<DeleteCollectionData>, conn: DbConn) -> EmptyResult {
+fn post_organization_collection_delete(
+    org_id: String,
+    col_id: String,
+    headers: AdminHeaders,
+    _data: JsonUpcase<DeleteCollectionData>,
+    conn: DbConn,
+) -> EmptyResult {
     delete_organization_collection(org_id, col_id, headers, conn)
 }
 
@@ -336,16 +364,18 @@ fn get_collection_users(org_id: String, coll_id: String, _headers: AdminHeaders,
     // Get org and collection, check that collection is from org
     let collection = match Collection::find_by_uuid_and_org(&coll_id, &org_id, &conn) {
         None => err!("Collection not found in Organization"),
-        Some(collection) => collection
+        Some(collection) => collection,
     };
 
     // Get the users from collection
     let user_list: Vec<Value> = CollectionUser::find_by_collection(&collection.uuid, &conn)
-    .iter().map(|col_user|  {
-        UserOrganization::find_by_user_and_org(&col_user.user_uuid, &org_id, &conn)
-        .unwrap()
-        .to_json_collection_user_details(col_user.read_only, &conn)
-    }).collect();
+        .iter()
+        .map(|col_user| {
+            UserOrganization::find_by_user_and_org(&col_user.user_uuid, &org_id, &conn)
+                .unwrap()
+                .to_json_collection_user_details(col_user.read_only, &conn)
+        })
+        .collect();
 
     Ok(Json(json!({
         "Data": user_list,
@@ -357,13 +387,16 @@ fn get_collection_users(org_id: String, coll_id: String, _headers: AdminHeaders,
 #[derive(FromForm)]
 struct OrgIdData {
     #[form(field = "organizationId")]
-    organization_id: String
+    organization_id: String,
 }
 
 #[get("/ciphers/organization-details?<data..>")]
 fn get_org_details(data: Form<OrgIdData>, headers: Headers, conn: DbConn) -> JsonResult {
     let ciphers = Cipher::find_by_org(&data.organization_id, &conn);
-    let ciphers_json: Vec<Value> = ciphers.iter().map(|c| c.to_json(&headers.host, &headers.user.uuid, &conn)).collect();
+    let ciphers_json: Vec<Value> = ciphers
+        .iter()
+        .map(|c| c.to_json(&headers.host, &headers.user.uuid, &conn))
+        .collect();
 
     Ok(Json(json!({
       "Data": ciphers_json,
@@ -389,7 +422,7 @@ where
     D: Deserializer<'de>,
 {
     // Deserialize null to empty Vec
-    Deserialize::deserialize(deserializer).or(Ok(vec![])) 
+    Deserialize::deserialize(deserializer).or(Ok(vec![]))
 }
 
 #[derive(Deserialize)]
@@ -415,11 +448,10 @@ fn send_invite(org_id: String, data: JsonUpcase<InviteData>, headers: AdminHeade
 
     let new_type = match UserOrgType::from_str(&data.Type.into_string()) {
         Some(new_type) => new_type as i32,
-        None => err!("Invalid type")
+        None => err!("Invalid type"),
     };
 
-    if new_type != UserOrgType::User &&
-        headers.org_user_type != UserOrgType::Owner {
+    if new_type != UserOrgType::User && headers.org_user_type != UserOrgType::Owner {
         err!("Only Owners can invite Managers, Admins or Owners")
     }
 
@@ -429,86 +461,112 @@ fn send_invite(org_id: String, data: JsonUpcase<InviteData>, headers: AdminHeade
             None => UserOrgStatus::Accepted as i32, // Automatically mark user as accepted if no email invites
         };
         let user = match User::find_by_mail(&email, &conn) {
-            None => if CONFIG.invitations_allowed { // Invite user if that's enabled
-                let mut invitation = Invitation::new(email.clone());
-                match invitation.save(&conn) {
-                    Ok(()) => {
-                        let mut user = User::new(email.clone());
-                        if user.save(&conn).is_err() {
-                            err!("Failed to create placeholder for invited user")
-                        } else {
-                            user_org_status = UserOrgStatus::Invited as i32;
-                            user
-                        }
-                    }
-                    Err(_) => err!(format!("Failed to invite: {}", email))
+            None => {
+                if CONFIG.invitations_allowed {
+                    // Invite user if that's enabled
+                    let mut invitation = Invitation::new(email.clone());
+                    invitation.save(&conn)?;
+                    let mut user = User::new(email.clone());
+                    user.save(&conn)?;
+                    user_org_status = UserOrgStatus::Invited as i32;
+                    user
+                } else {
+                    err!(format!("User email does not exist: {}", email))
                 }
-                
-            } else {
-                err!(format!("User email does not exist: {}", email))
-            },
-            Some(user) => if UserOrganization::find_by_user_and_org(&user.uuid, &org_id, &conn).is_some() {
-                err!(format!("User already in organization: {}", email))
-            } else {
-                user
             }
-
+            Some(user) => {
+                if UserOrganization::find_by_user_and_org(&user.uuid, &org_id, &conn).is_some() {
+                    err!(format!("User already in organization: {}", email))
+                } else {
+                    user
+                }
+            }
         };
 
-        // Don't create UserOrganization in virtual organization
-        let mut org_user_id = None;
-        if org_id != Organization::VIRTUAL_ID {
-            let mut new_user = UserOrganization::new(user.uuid.clone(), org_id.clone());
-            let access_all = data.AccessAll.unwrap_or(false);
-            new_user.access_all = access_all;
-            new_user.type_ = new_type;
-            new_user.status = user_org_status;
+        let mut new_user = UserOrganization::new(user.uuid.clone(), org_id.clone());
+        let access_all = data.AccessAll.unwrap_or(false);
+        new_user.access_all = access_all;
+        new_user.type_ = new_type;
+        new_user.status = user_org_status;
 
-            // If no accessAll, add the collections received
-            if !access_all {
-                for col in &data.Collections {
-                    match Collection::find_by_uuid_and_org(&col.Id, &org_id, &conn) {
-                        None => err!("Collection not found in Organization"),
-                        Some(collection) => {
-                            if CollectionUser::save(&user.uuid, &collection.uuid, col.ReadOnly, &conn).is_err() {
-                                err!("Failed saving collection access for user")
-                            }
-                        }
+        // If no accessAll, add the collections received
+        if !access_all {
+            for col in &data.Collections {
+                match Collection::find_by_uuid_and_org(&col.Id, &org_id, &conn) {
+                    None => err!("Collection not found in Organization"),
+                    Some(collection) => {
+                        CollectionUser::save(&user.uuid, &collection.uuid, col.ReadOnly, &conn)?;
                     }
                 }
             }
-
-            if new_user.save(&conn).is_err() {
-                err!("Failed to add user to organization")
-            }
-            org_user_id = Some(new_user.uuid.clone());
         }
 
-        if CONFIG.mail.is_some() {
-            use crate::mail;
-            use chrono::{Duration, Utc};
-            let time_now = Utc::now().naive_utc();
-            let claims = InviteJWTClaims {
-                nbf: time_now.timestamp(),
-                exp: (time_now + Duration::days(5)).timestamp(),
-                iss: JWT_ISSUER.to_string(),
-                sub: user.uuid.to_string(),
-                email: email.clone(),
-                org_id: org_id.clone(),
-                user_org_id: org_user_id.clone(),
-            };
+        new_user.save(&conn)?;
+
+        if let Some(ref mail_config) = CONFIG.mail {
             let org_name = match Organization::find_by_uuid(&org_id, &conn) {
                 Some(org) => org.name,
-                None => err!("Error looking up organization")
+                None => err!("Error looking up organization"),
             };
+            let claims = generate_invite_claims(
+                user.uuid.to_string(),
+                user.email.clone(),
+                org_id.clone(),
+                Some(new_user.uuid.clone()),
+            );
             let invite_token = encode_jwt(&claims);
-            if let Some(ref mail_config) = CONFIG.mail {
-                if let Err(e) = mail::send_invite(&email, &org_id, &org_user_id.unwrap_or(Organization::VIRTUAL_ID.to_string()), 
-                                                  &invite_token, &org_name, mail_config) {
-                    err!(format!("There has been a problem sending the email: {}", e))
-                }
-            }
+            mail::send_invite(&email, &org_id, &new_user.uuid, &invite_token, &org_name, mail_config)?;
         }
+    }
+
+    Ok(())
+}
+
+#[post("/organizations/<org_id>/users/<user_org>/reinvite")]
+fn reinvite_user(org_id: String, user_org: String, _headers: AdminHeaders, conn: DbConn) -> EmptyResult {
+    if !CONFIG.invitations_allowed {
+        err!("Invitations are not allowed.")
+    }
+
+    if CONFIG.mail.is_none() {
+        err!("SMTP is not configured.")
+    }
+
+    let user_org = match UserOrganization::find_by_uuid(&user_org, &conn) {
+        Some(user_org) => user_org,
+        None => err!("UserOrg not found."),
+    };
+
+    let user = match User::find_by_uuid(&user_org.user_uuid, &conn) {
+        Some(user) => user,
+        None => err!("User not found."),
+    };
+
+    if Invitation::find_by_mail(&user.email, &conn).is_none() {
+        err!("No invitation found for user to resend. Try inviting them first.")
+    }
+
+    let org_name = match Organization::find_by_uuid(&org_id, &conn) {
+        Some(org) => org.name,
+        None => err!("Error looking up organization."),
+    };
+
+    let claims = generate_invite_claims(
+        user.uuid.to_string(),
+        user.email.clone(),
+        org_id.clone(),
+        Some(user_org.uuid.clone()),
+    );
+    let invite_token = encode_jwt(&claims);
+    if let Some(ref mail_config) = CONFIG.mail {
+        mail::send_invite(
+            &user.email,
+            &org_id,
+            &user_org.uuid,
+            &invite_token,
+            &org_name,
+            mail_config,
+        )?;
     }
 
     Ok(())
@@ -520,50 +578,64 @@ struct AcceptData {
     Token: String,
 }
 
+fn generate_invite_claims(uuid: String, email: String, org_id: String, org_user_id: Option<String>) -> InviteJWTClaims {
+    let time_now = Utc::now().naive_utc();
+    InviteJWTClaims {
+        nbf: time_now.timestamp(),
+        exp: (time_now + Duration::days(5)).timestamp(),
+        iss: JWT_ISSUER.to_string(),
+        sub: uuid.clone(),
+        email: email.clone(),
+        org_id: org_id.clone(),
+        user_org_id: org_user_id.clone(),
+    }
+}
+
 #[post("/organizations/<_org_id>/users/<_org_user_id>/accept", data = "<data>")]
 fn accept_invite(_org_id: String, _org_user_id: String, data: JsonUpcase<AcceptData>, conn: DbConn) -> EmptyResult {
-// The web-vault passes org_id and org_user_id in the URL, but we are just reading them from the JWT instead
+    // The web-vault passes org_id and org_user_id in the URL, but we are just reading them from the JWT instead
     let data: AcceptData = data.into_inner().data;
     let token = &data.Token;
-    let claims: InviteJWTClaims = match decode_invite_jwt(&token) {
-            Ok(claims) => claims,
-            Err(msg) => err!("Invalid claim: {:#?}", msg),
-    };
+    let claims: InviteJWTClaims = decode_invite_jwt(&token)?;
 
     match User::find_by_mail(&claims.email, &conn) {
         Some(_) => {
             Invitation::take(&claims.email, &conn);
             if claims.user_org_id.is_some() {
                 // If this isn't the virtual_org, mark userorg as accepted
-                let mut user_org = match UserOrganization::find_by_uuid_and_org(&claims.user_org_id.unwrap(), &claims.org_id, &conn) {
-                    Some(user_org) => user_org,
-                    None => err!("Error accepting the invitation") 
-                };
+                let mut user_org =
+                    match UserOrganization::find_by_uuid_and_org(&claims.user_org_id.unwrap(), &claims.org_id, &conn) {
+                        Some(user_org) => user_org,
+                        None => err!("Error accepting the invitation"),
+                    };
                 user_org.status = UserOrgStatus::Accepted as i32;
                 if user_org.save(&conn).is_err() {
                     err!("Failed to accept user to organization")
                 }
             }
-        },
-        None => {
-            err!("Invited user not found")
-        },
+        }
+        None => err!("Invited user not found"),
     }
 
     Ok(())
 }
 
 #[post("/organizations/<org_id>/users/<org_user_id>/confirm", data = "<data>")]
-fn confirm_invite(org_id: String, org_user_id: String, data: JsonUpcase<Value>, headers: AdminHeaders, conn: DbConn) -> EmptyResult {
+fn confirm_invite(
+    org_id: String,
+    org_user_id: String,
+    data: JsonUpcase<Value>,
+    headers: AdminHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     let data = data.into_inner().data;
 
     let mut user_to_confirm = match UserOrganization::find_by_uuid_and_org(&org_user_id, &org_id, &conn) {
         Some(user) => user,
-        None => err!("The specified user isn't a member of the organization")
+        None => err!("The specified user isn't a member of the organization"),
     };
 
-    if user_to_confirm.type_ != UserOrgType::User &&
-        headers.org_user_type != UserOrgType::Owner {
+    if user_to_confirm.type_ != UserOrgType::User && headers.org_user_type != UserOrgType::Owner {
         err!("Only Owners can confirm Managers, Admins or Owners")
     }
 
@@ -574,20 +646,17 @@ fn confirm_invite(org_id: String, org_user_id: String, data: JsonUpcase<Value>, 
     user_to_confirm.status = UserOrgStatus::Confirmed as i32;
     user_to_confirm.key = match data["Key"].as_str() {
         Some(key) => key.to_string(),
-        None => err!("Invalid key provided")
+        None => err!("Invalid key provided"),
     };
 
-    match user_to_confirm.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to add user to organization")
-    }
+    user_to_confirm.save(&conn)
 }
 
 #[get("/organizations/<org_id>/users/<org_user_id>")]
 fn get_user(org_id: String, org_user_id: String, _headers: AdminHeaders, conn: DbConn) -> JsonResult {
     let user = match UserOrganization::find_by_uuid_and_org(&org_user_id, &org_id, &conn) {
         Some(user) => user,
-        None => err!("The specified user isn't a member of the organization")
+        None => err!("The specified user isn't a member of the organization"),
     };
 
     Ok(Json(user.to_json_details(&conn)))
@@ -603,44 +672,50 @@ struct EditUserData {
 }
 
 #[put("/organizations/<org_id>/users/<org_user_id>", data = "<data>", rank = 1)]
-fn put_organization_user(org_id: String, org_user_id: String, data: JsonUpcase<EditUserData>, headers: AdminHeaders, conn: DbConn) -> EmptyResult {
+fn put_organization_user(
+    org_id: String,
+    org_user_id: String,
+    data: JsonUpcase<EditUserData>,
+    headers: AdminHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     edit_user(org_id, org_user_id, data, headers, conn)
 }
 
 #[post("/organizations/<org_id>/users/<org_user_id>", data = "<data>", rank = 1)]
-fn edit_user(org_id: String, org_user_id: String, data: JsonUpcase<EditUserData>, headers: AdminHeaders, conn: DbConn) -> EmptyResult {
+fn edit_user(
+    org_id: String,
+    org_user_id: String,
+    data: JsonUpcase<EditUserData>,
+    headers: AdminHeaders,
+    conn: DbConn,
+) -> EmptyResult {
     let data: EditUserData = data.into_inner().data;
 
     let new_type = match UserOrgType::from_str(&data.Type.into_string()) {
         Some(new_type) => new_type,
-        None => err!("Invalid type")
+        None => err!("Invalid type"),
     };
 
     let mut user_to_edit = match UserOrganization::find_by_uuid_and_org(&org_user_id, &org_id, &conn) {
         Some(user) => user,
-        None => err!("The specified user isn't member of the organization")
+        None => err!("The specified user isn't member of the organization"),
     };
 
-    if new_type != user_to_edit.type_ && (
-            user_to_edit.type_ >= UserOrgType::Admin ||
-            new_type >= UserOrgType::Admin
-        ) &&
-        headers.org_user_type != UserOrgType::Owner {
+    if new_type != user_to_edit.type_
+        && (user_to_edit.type_ >= UserOrgType::Admin || new_type >= UserOrgType::Admin)
+        && headers.org_user_type != UserOrgType::Owner
+    {
         err!("Only Owners can grant and remove Admin or Owner privileges")
     }
 
-    if user_to_edit.type_ == UserOrgType::Owner &&
-        headers.org_user_type != UserOrgType::Owner {
+    if user_to_edit.type_ == UserOrgType::Owner && headers.org_user_type != UserOrgType::Owner {
         err!("Only Owners can edit Owner users")
     }
 
-    if user_to_edit.type_ == UserOrgType::Owner &&
-        new_type != UserOrgType::Owner {
-
+    if user_to_edit.type_ == UserOrgType::Owner && new_type != UserOrgType::Owner {
         // Removing owner permmission, check that there are at least another owner
-        let num_owners = UserOrganization::find_by_org_and_type(
-            &org_id, UserOrgType::Owner as i32, &conn)
-            .len();
+        let num_owners = UserOrganization::find_by_org_and_type(&org_id, UserOrgType::Owner as i32, &conn).len();
 
         if num_owners <= 1 {
             err!("Can't delete the last owner")
@@ -652,9 +727,7 @@ fn edit_user(org_id: String, org_user_id: String, data: JsonUpcase<EditUserData>
 
     // Delete all the odd collections
     for c in CollectionUser::find_by_organization_and_user_uuid(&org_id, &user_to_edit.user_uuid, &conn) {
-        if c.delete(&conn).is_err() {
-            err!("Failed deleting old collection assignment")
-        }
+        c.delete(&conn)?;
     }
 
     // If no accessAll, add the collections received
@@ -663,64 +736,36 @@ fn edit_user(org_id: String, org_user_id: String, data: JsonUpcase<EditUserData>
             match Collection::find_by_uuid_and_org(&col.Id, &org_id, &conn) {
                 None => err!("Collection not found in Organization"),
                 Some(collection) => {
-                    if CollectionUser::save(&user_to_edit.user_uuid, &collection.uuid, col.ReadOnly, &conn).is_err() {
-                        err!("Failed saving collection access for user")
-                    }
+                    CollectionUser::save(&user_to_edit.user_uuid, &collection.uuid, col.ReadOnly, &conn)?;
                 }
             }
         }
     }
 
-    match user_to_edit.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to save user data")
-    }
+    user_to_edit.save(&conn)
 }
 
 #[delete("/organizations/<org_id>/users/<org_user_id>")]
 fn delete_user(org_id: String, org_user_id: String, headers: AdminHeaders, conn: DbConn) -> EmptyResult {
-    // We're deleting user in virtual Organization. Delete User, not UserOrganization
-    if org_id == Organization::VIRTUAL_ID {
-        match User::find_by_uuid(&org_user_id, &conn) {
-            Some(user_to_delete) => {
-                if user_to_delete.uuid == headers.user.uuid {
-                    err!("Delete your account in the account settings")
-                } else {
-                    match user_to_delete.delete(&conn) {
-                        Ok(()) => return Ok(()),
-                        Err(_) => err!("Failed to delete user - likely because it's the only owner of organization")
-                    }
-                }
-            },
-            None => err!("User not found")
-        }
-    }
-
     let user_to_delete = match UserOrganization::find_by_uuid_and_org(&org_user_id, &org_id, &conn) {
         Some(user) => user,
-        None => err!("User to delete isn't member of the organization")
+        None => err!("User to delete isn't member of the organization"),
     };
 
-    if user_to_delete.type_ != UserOrgType::User &&
-        headers.org_user_type != UserOrgType::Owner {
+    if user_to_delete.type_ != UserOrgType::User && headers.org_user_type != UserOrgType::Owner {
         err!("Only Owners can delete Admins or Owners")
     }
 
     if user_to_delete.type_ == UserOrgType::Owner {
         // Removing owner, check that there are at least another owner
-        let num_owners = UserOrganization::find_by_org_and_type(
-            &org_id, UserOrgType::Owner as i32, &conn)
-            .len();
+        let num_owners = UserOrganization::find_by_org_and_type(&org_id, UserOrgType::Owner as i32, &conn).len();
 
         if num_owners <= 1 {
             err!("Can't delete the last owner")
         }
     }
 
-    match user_to_delete.delete(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed deleting user from organization")
-    }
+    user_to_delete.delete(&conn)
 }
 
 #[post("/organizations/<org_id>/users/<org_user_id>/delete")]
@@ -728,13 +773,8 @@ fn post_delete_user(org_id: String, org_user_id: String, headers: AdminHeaders, 
     delete_user(org_id, org_user_id, headers, conn)
 }
 
-#[post("/organizations/<_org_id>/users/<_org_user_id>/reinvite")]
-fn post_reinvite_user(_org_id: String, _org_user_id: String, _headers: AdminHeaders, _conn: DbConn) -> EmptyResult {
-    err!("This functionality is not implemented. The user needs to manually register before they can be accepted into the organization.")
-}
-
-use super::ciphers::CipherData;
 use super::ciphers::update_cipher_from_data;
+use super::ciphers::CipherData;
 
 #[derive(Deserialize)]
 #[allow(non_snake_case)]
@@ -754,13 +794,19 @@ struct RelationsData {
 }
 
 #[post("/ciphers/import-organization?<query..>", data = "<data>")]
-fn post_org_import(query: Form<OrgIdData>, data: JsonUpcase<ImportData>, headers: Headers, conn: DbConn, ws: State<WebSocketUsers>) -> EmptyResult {
+fn post_org_import(
+    query: Form<OrgIdData>,
+    data: JsonUpcase<ImportData>,
+    headers: Headers,
+    conn: DbConn,
+    nt: Notify,
+) -> EmptyResult {
     let data: ImportData = data.into_inner().data;
     let org_id = query.into_inner().organization_id;
 
     let org_user = match UserOrganization::find_by_user_and_org(&headers.user.uuid, &org_id, &conn) {
         Some(user) => user,
-        None => err!("User is not part of the organization")
+        None => err!("User is not part of the organization"),
     };
 
     if org_user.type_ < UserOrgType::Admin {
@@ -768,14 +814,18 @@ fn post_org_import(query: Form<OrgIdData>, data: JsonUpcase<ImportData>, headers
     }
 
     // Read and create the collections
-    let collections: Vec<_> = data.Collections.into_iter().map(|coll| {
-        let mut collection = Collection::new(org_id.clone(), coll.Name);
-        if collection.save(&conn).is_err() {
-            err!("Failed to create Collection");
-        }
-        
-        Ok(collection)
-    }).collect();
+    let collections: Vec<_> = data
+        .Collections
+        .into_iter()
+        .map(|coll| {
+            let mut collection = Collection::new(org_id.clone(), coll.Name);
+            if collection.save(&conn).is_err() {
+                err!("Failed to create Collection");
+            }
+
+            Ok(collection)
+        })
+        .collect();
 
     // Read the relations between collections and ciphers
     let mut relations = Vec::new();
@@ -784,11 +834,24 @@ fn post_org_import(query: Form<OrgIdData>, data: JsonUpcase<ImportData>, headers
     }
 
     // Read and create the ciphers
-    let ciphers: Vec<_> = data.Ciphers.into_iter().map(|cipher_data| {
-        let mut cipher = Cipher::new(cipher_data.Type, cipher_data.Name.clone());
-        update_cipher_from_data(&mut cipher, cipher_data, &headers, false, &conn, &ws, UpdateType::SyncCipherCreate).ok();
-        cipher
-    }).collect();
+    let ciphers: Vec<_> = data
+        .Ciphers
+        .into_iter()
+        .map(|cipher_data| {
+            let mut cipher = Cipher::new(cipher_data.Type, cipher_data.Name.clone());
+            update_cipher_from_data(
+                &mut cipher,
+                cipher_data,
+                &headers,
+                false,
+                &conn,
+                &nt,
+                UpdateType::CipherCreate,
+            )
+            .ok();
+            cipher
+        })
+        .collect();
 
     // Assign the collections
     for (cipher_index, coll_index) in relations {
@@ -796,18 +859,12 @@ fn post_org_import(query: Form<OrgIdData>, data: JsonUpcase<ImportData>, headers
         let coll = &collections[coll_index];
         let coll_id = match coll {
             Ok(coll) => coll.uuid.as_str(),
-            Err(_) => err!("Failed to assign to collection")
+            Err(_) => err!("Failed to assign to collection"),
         };
-        
-        match CollectionCipher::save(cipher_id, coll_id, &conn) {
-            Ok(()) => (),
-            Err(_) => err!("Failed to add cipher to collection")
-        };
+
+        CollectionCipher::save(cipher_id, coll_id, &conn)?;
     }
 
     let mut user = headers.user;
-    match user.update_revision(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to update the revision, please log out and log back in to finish import.")
-    }
+    user.update_revision(&conn)
 }

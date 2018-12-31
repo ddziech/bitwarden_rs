@@ -8,7 +8,6 @@ pub fn routes() -> Vec<Route> {
     let mut mod_routes = routes![
         clear_device_token,
         put_device_token,
-
         get_eq_domains,
         post_eq_domains,
         put_eq_domains,
@@ -25,9 +24,9 @@ pub fn routes() -> Vec<Route> {
     routes
 }
 
-///
-/// Move this somewhere else
-///
+//
+// Move this somewhere else
+//
 use rocket::Route;
 
 use rocket_contrib::json::Json;
@@ -77,7 +76,7 @@ struct GlobalDomain {
     Excluded: bool,
 }
 
-const GLOBAL_DOMAINS: &str = include_str!("global_domains.json");
+const GLOBAL_DOMAINS: &str = include_str!("../../static/global_domains.json");
 
 #[get("/settings/domains")]
 fn get_eq_domains(headers: Headers) -> JsonResult {
@@ -120,10 +119,9 @@ fn post_eq_domains(data: JsonUpcase<EquivDomainData>, headers: Headers, conn: Db
     user.excluded_globals = to_string(&excluded_globals).unwrap_or("[]".to_string());
     user.equivalent_domains = to_string(&equivalent_domains).unwrap_or("[]".to_string());
 
-    match user.save(&conn) {
-        Ok(()) => Ok(Json(json!({}))),
-        Err(_) => err!("Failed to save user"),
-    }
+    user.save(&conn)?;
+
+    Ok(Json(json!({})))
 }
 
 #[put("/settings/domains", data = "<data>")]

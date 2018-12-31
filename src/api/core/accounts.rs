@@ -3,13 +3,13 @@ use rocket_contrib::json::Json;
 use crate::db::models::*;
 use crate::db::DbConn;
 
-use crate::api::{EmptyResult, JsonResult, JsonUpcase, NumberOrString, PasswordData, UpdateType, WebSocketUsers};
-use crate::auth::{Headers, decode_invite_jwt, InviteJWTClaims};
+use crate::api::{EmptyResult, JsonResult, JsonUpcase, Notify, NumberOrString, PasswordData, UpdateType};
+use crate::auth::{decode_invite_jwt, Headers, InviteJWTClaims};
 use crate::mail;
 
 use crate::CONFIG;
 
-use rocket::{Route, State};
+use rocket::Route;
 
 pub fn routes() -> Vec<Route> {
     routes![
@@ -65,9 +65,7 @@ fn register(data: JsonUpcase<RegisterData>, conn: DbConn) -> EmptyResult {
                 if CONFIG.mail.is_none() {
                     for mut user_org in UserOrganization::find_invited_by_user(&user.uuid, &conn).iter_mut() {
                         user_org.status = UserOrgStatus::Accepted as i32;
-                        if user_org.save(&conn).is_err() {
-                            err!("Failed to accept user to organization")
-                        }
+                        user_org.save(&conn)?;
                     }
                     if !Invitation::take(&data.Email, &conn) {
                         err!("Error accepting invitation")
@@ -76,12 +74,10 @@ fn register(data: JsonUpcase<RegisterData>, conn: DbConn) -> EmptyResult {
                 } else {
                     let token = match &data.Token {
                         Some(token) => token,
-                        None => err!("No valid invite token")
+                        None => err!("No valid invite token"),
                     };
-                    let claims: InviteJWTClaims = match decode_invite_jwt(&token) {
-                        Ok(claims) => claims,
-                        Err(msg) => err!("Invalid claim: {:#?}", msg),
-                    };
+
+                    let claims: InviteJWTClaims = decode_invite_jwt(&token)?;
                     if &claims.email == &data.Email {
                         user
                     } else {
@@ -89,7 +85,7 @@ fn register(data: JsonUpcase<RegisterData>, conn: DbConn) -> EmptyResult {
                     }
                 }
             } else if CONFIG.signups_allowed {
-                    err!("Account with this email already exists")
+                err!("Account with this email already exists")
             } else {
                 err!("Registration not allowed")
             }
@@ -128,10 +124,7 @@ fn register(data: JsonUpcase<RegisterData>, conn: DbConn) -> EmptyResult {
         user.public_key = Some(keys.PublicKey);
     }
 
-    match user.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to save user"),
-    }
+    user.save(&conn)
 }
 
 #[get("/accounts/profile")]
@@ -164,10 +157,8 @@ fn post_profile(data: JsonUpcase<ProfileData>, headers: Headers, conn: DbConn) -
         Some(ref h) if h.is_empty() => None,
         _ => data.MasterPasswordHint,
     };
-    match user.save(&conn) {
-        Ok(()) => Ok(Json(user.to_json(&conn))),
-        Err(_) => err!("Failed to save user profile"),
-    }
+    user.save(&conn)?;
+    Ok(Json(user.to_json(&conn)))
 }
 
 #[get("/users/<uuid>/public-key")]
@@ -193,10 +184,8 @@ fn post_keys(data: JsonUpcase<KeysData>, headers: Headers, conn: DbConn) -> Json
     user.private_key = Some(data.EncryptedPrivateKey);
     user.public_key = Some(data.PublicKey);
 
-    match user.save(&conn) {
-        Ok(()) => Ok(Json(user.to_json(&conn))),
-        Err(_) => err!("Failed to save the user's keys"),
-    }
+    user.save(&conn)?;
+    Ok(Json(user.to_json(&conn)))
 }
 
 #[derive(Deserialize)]
@@ -218,10 +207,7 @@ fn post_password(data: JsonUpcase<ChangePassData>, headers: Headers, conn: DbCon
 
     user.set_password(&data.NewMasterPasswordHash);
     user.key = data.Key;
-    match user.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to save password"),
-    }
+    user.save(&conn)
 }
 
 #[derive(Deserialize)]
@@ -248,10 +234,7 @@ fn post_kdf(data: JsonUpcase<ChangeKdfData>, headers: Headers, conn: DbConn) -> 
     user.client_kdf_type = data.Kdf;
     user.set_password(&data.NewMasterPasswordHash);
     user.key = data.Key;
-    match user.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to save password settings"),
-    }
+    user.save(&conn)
 }
 
 #[derive(Deserialize)]
@@ -274,7 +257,7 @@ struct KeyData {
 }
 
 #[post("/accounts/key", data = "<data>")]
-fn post_rotatekey(data: JsonUpcase<KeyData>, headers: Headers, conn: DbConn, ws: State<WebSocketUsers>) -> EmptyResult {
+fn post_rotatekey(data: JsonUpcase<KeyData>, headers: Headers, conn: DbConn, nt: Notify) -> EmptyResult {
     let data: KeyData = data.into_inner().data;
 
     if !headers.user.check_valid_password(&data.MasterPasswordHash) {
@@ -295,9 +278,7 @@ fn post_rotatekey(data: JsonUpcase<KeyData>, headers: Headers, conn: DbConn, ws:
         }
 
         saved_folder.name = folder_data.Name;
-        if saved_folder.save(&conn).is_err() {
-            err!("Failed to save folder")
-        }
+        saved_folder.save(&conn)?
     }
 
     // Update cipher data
@@ -313,7 +294,15 @@ fn post_rotatekey(data: JsonUpcase<KeyData>, headers: Headers, conn: DbConn, ws:
             err!("The cipher is not owned by the user")
         }
 
-        update_cipher_from_data(&mut saved_cipher, cipher_data, &headers, false, &conn, &ws, UpdateType::SyncCipherUpdate)?
+        update_cipher_from_data(
+            &mut saved_cipher,
+            cipher_data,
+            &headers,
+            false,
+            &conn,
+            &nt,
+            UpdateType::CipherUpdate,
+        )?
     }
 
     // Update user data
@@ -323,11 +312,7 @@ fn post_rotatekey(data: JsonUpcase<KeyData>, headers: Headers, conn: DbConn, ws:
     user.private_key = Some(data.PrivateKey);
     user.reset_security_stamp();
 
-    if user.save(&conn).is_err() {
-        err!("Failed modify user key");
-    }
-
-    Ok(())
+    user.save(&conn)
 }
 
 #[post("/accounts/security-stamp", data = "<data>")]
@@ -340,10 +325,7 @@ fn post_sstamp(data: JsonUpcase<PasswordData>, headers: Headers, conn: DbConn) -
     }
 
     user.reset_security_stamp();
-    match user.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to reset security stamp"),
-    }
+    user.save(&conn)
 }
 
 #[derive(Deserialize)]
@@ -398,10 +380,7 @@ fn post_email(data: JsonUpcase<ChangeEmailData>, headers: Headers, conn: DbConn)
     user.set_password(&data.NewMasterPasswordHash);
     user.key = data.Key;
 
-    match user.save(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed to save email address"),
-    }
+    user.save(&conn)
 }
 
 #[post("/accounts/delete", data = "<data>")]
@@ -418,10 +397,7 @@ fn delete_account(data: JsonUpcase<PasswordData>, headers: Headers, conn: DbConn
         err!("Invalid password")
     }
 
-    match user.delete(&conn) {
-        Ok(()) => Ok(()),
-        Err(_) => err!("Failed deleting user account, are you the only owner of some organization?"),
-    }
+    user.delete(&conn)
 }
 
 #[get("/accounts/revision-date")]
@@ -446,9 +422,7 @@ fn password_hint(data: JsonUpcase<PasswordHintData>, conn: DbConn) -> EmptyResul
     };
 
     if let Some(ref mail_config) = CONFIG.mail {
-        if let Err(e) = mail::send_password_hint(&data.Email, hint, mail_config) {
-            err!(format!("There have been a problem sending the email: {}", e));
-        }
+        mail::send_password_hint(&data.Email, hint, mail_config)?;
     } else if CONFIG.show_password_hint {
         if let Some(hint) = hint {
             err!(format!("Your password hint is: {}", &hint));

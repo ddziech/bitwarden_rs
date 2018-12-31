@@ -4,6 +4,12 @@ version = "1.0.0"
 authors = ["Daniel García <dani-garcia@users.noreply.github.com>"]
 edition = "2018"
 
+repository = "https://github.com/dani-garcia/bitwarden_rs"
+readme = "README.md"
+license = "GPL-3.0-only"
+publish = false
+build = "build.rs"
+
 [features]
 enable_syslog = ["syslog", "fern/syslog-4"]
 
@@ -28,8 +34,8 @@ rmpv = "0.4.0"
 chashmap = "2.2.0"
 
 # A generic serialization/deserialization framework
-serde = "1.0.82"
-serde_derive = "1.0.82"
+serde = "1.0.83"
+serde_derive = "1.0.83"
 serde_json = "1.0.33"
 
 # Logging
@@ -73,6 +79,9 @@ dotenv = { version = "0.13.0", default-features = false }
 
 # Lazy static macro
 lazy_static = { version = "1.2.0", features = ["nightly"] }
+
+# More derives
+derive_more = "0.13.0"
 
 # Numerical libraries
 num-traits = "0.2.6"

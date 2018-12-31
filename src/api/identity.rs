@@ -61,17 +61,16 @@ fn _refresh_login(data: ConnectData, conn: DbConn) -> JsonResult {
     let orgs = UserOrganization::find_by_user(&user.uuid, &conn);
 
     let (access_token, expires_in) = device.refresh_tokens(&user, orgs);
-    match device.save(&conn) {
-        Ok(()) => Ok(Json(json!({
-            "access_token": access_token,
-            "expires_in": expires_in,
-            "token_type": "Bearer",
-            "refresh_token": device.refresh_token,
-            "Key": user.key,
-            "PrivateKey": user.private_key,
-        }))),
-        Err(e) => err!("Failed to add device to user", e),
-    }
+
+    device.save(&conn)?;
+    Ok(Json(json!({
+        "access_token": access_token,
+        "expires_in": expires_in,
+        "token_type": "Bearer",
+        "refresh_token": device.refresh_token,
+        "Key": user.key,
+        "PrivateKey": user.private_key,
+    })))
 }
 
 fn _password_login(data: ConnectData, conn: DbConn, ip: ClientIp) -> JsonResult {
@@ -85,19 +84,19 @@ fn _password_login(data: ConnectData, conn: DbConn, ip: ClientIp) -> JsonResult 
     let username = data.username.as_ref().unwrap();
     let user = match User::find_by_mail(username, &conn) {
         Some(user) => user,
-        None => err!(format!(
-            "Username or password is incorrect. Try again. IP: {}. Username: {}.",
-            ip.ip, username
-        )),
+        None => err!(
+            "Username or password is incorrect. Try again",
+            format!("IP: {}. Username: {}.", ip.ip, username)
+        ),
     };
 
     // Check password
     let password = data.password.as_ref().unwrap();
     if !user.check_valid_password(password) {
-        err!(format!(
-            "Username or password is incorrect. Try again. IP: {}. Username: {}.",
-            ip.ip, username
-        ))
+        err!(
+            "Username or password is incorrect. Try again",
+            format!("IP: {}. Username: {}.", ip.ip, username)
+        )
     }
 
     // On iOS, device_type sends "iOS", on others it sends a number
@@ -126,9 +125,7 @@ fn _password_login(data: ConnectData, conn: DbConn, ip: ClientIp) -> JsonResult 
     let orgs = UserOrganization::find_by_user(&user.uuid, &conn);
 
     let (access_token, expires_in) = device.refresh_tokens(&user, orgs);
-    if let Err(e) = device.save(&conn) {
-        err!("Failed to add device to user", e)
-    }
+    device.save(&conn)?;
 
     let mut result = json!({
         "access_token": access_token,
@@ -148,7 +145,12 @@ fn _password_login(data: ConnectData, conn: DbConn, ip: ClientIp) -> JsonResult 
     Ok(Json(result))
 }
 
-fn twofactor_auth(user_uuid: &str, data: &ConnectData, device: &mut Device, conn: &DbConn) -> ApiResult<Option<String>> {
+fn twofactor_auth(
+    user_uuid: &str,
+    data: &ConnectData,
+    device: &mut Device,
+    conn: &DbConn,
+) -> ApiResult<Option<String>> {
     let twofactors_raw = TwoFactor::find_by_user(user_uuid, conn);
     // Remove u2f challenge twofactors (impl detail)
     let twofactors: Vec<_> = twofactors_raw.iter().filter(|tf| tf.type_ < 1000).collect();
@@ -255,13 +257,14 @@ fn _json_err_twofactor(providers: &[i32], user_uuid: &str, conn: &DbConn) -> Api
                 result["TwoFactorProviders2"][provider.to_string()] = Value::Object(map);
             }
 
-            Some(TwoFactorType::YubiKey) => {
-                let twofactor = match TwoFactor::find_by_user_and_type(user_uuid, TwoFactorType::YubiKey as i32, &conn) {
+            Some(tf_type @ TwoFactorType::YubiKey) => {
+                let twofactor = match TwoFactor::find_by_user_and_type(user_uuid, tf_type as i32, &conn) {
                     Some(tf) => tf,
                     None => err!("No YubiKey devices registered"),
                 };
 
-                let yubikey_metadata: two_factor::YubikeyMetadata = serde_json::from_str(&twofactor.data).expect("Can't parse Yubikey Metadata");
+                let yubikey_metadata: two_factor::YubikeyMetadata =
+                    serde_json::from_str(&twofactor.data).expect("Can't parse Yubikey Metadata");
 
                 let mut map = JsonMap::new();
                 map.insert("Nfc".into(), Value::Bool(yubikey_metadata.Nfc));
