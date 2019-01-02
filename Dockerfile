@@ -36,6 +36,7 @@ WORKDIR /app
 # Copies over *only* your manifests and vendored dependencies
 COPY ./Cargo.* ./
 COPY ./rust-toolchain ./rust-toolchain
+COPY build.rs .
 
 # Builds your dependencies and removes the
 # dummy project, except the target folder

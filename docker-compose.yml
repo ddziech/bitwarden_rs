@@ -1,18 +1,103 @@
 version: '3.7'
 
 services:
+
+  db:
+    image: perconalab/proxysql
+    networks:
+      - galera
+      - outside
+    ports:
+      - "3306:3306"
+      - "6032:6032"
+    env_file: proxysql.env
+    deploy:
+      mode: replicated
+      replicas: 1
+      labels: [APP=db]
+      # service restart policy
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      # service update configuration
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: continue
+        monitor: 60s
+        max_failure_ratio: 0.3
+      # placement constraint - in this case on 'worker' nodes only
+      placement:
+        constraints: [node.role == manager]
+
+    # service discovery
+  galera_etcd:
+    image: quay.io/coreos/etcd
+    command: etcd
+    volumes:
+      - /usr/share/ca-certificates/:/etc/ssl/certs
+    env_file: etcd.env
+    networks:
+      - galera
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+
   bitwarden:
-    build: .
+#    build: .
+    image: ddziech/bitwarden_rs:mysql
+    networks:
+      - outside
     restart: always
     ports:
       - '80:80'
     depends_on:
       - db
-  db:
-    image: mysql:5.7
+
+  percona-xtradb-cluster:
+    image: percona/percona-xtradb-cluster:5.7
+    networks:
+      - galera
+    env_file: galera.env
     restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: dev
-      MYSQL_DATABASE: bitwarden
-      MYSQL_USER: dev
-      MYSQL_PASSWORD: dev
+    ports:
+      - '3336:3306'
+    deploy:
+      mode: global
+      labels: [APP=pxc]
+        # service restart policy
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      # service update configuration
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: continue
+        monitor: 60s
+        max_failure_ratio: 0.3
+        # placement constraint - in this case on 'worker' nodes only
+      placement:
+        constraints: [node.role == worker]
+#    volumes:
+#      - mysql-data:/var/lib/mysql
+#volumes:
+#  mysql-data:
+#    name: '{{.Service.Name}}-{{.Task.Slot}}-data'
+#    driver: local
+networks:
+  outside:
+  galera:
+    # Use a custom driver
+    driver: overlay
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.20.1.0/24
