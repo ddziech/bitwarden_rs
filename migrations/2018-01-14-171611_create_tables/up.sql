@@ -21,7 +21,8 @@ create table ciphers
   fields text null,
   data text null,
   favorite text null,
-  password_history text null
+  password_history text null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
@@ -36,7 +37,8 @@ create table collections
 (
   uuid text null,
   org_uuid text null,
-  name text null
+  name text null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
@@ -50,7 +52,8 @@ create table devices
   type int null,
   push_token text null,
   refresh_token text null,
-  twofactor_remember text null
+  twofactor_remember text null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
@@ -60,7 +63,8 @@ create table folders
   created_at datetime null,
   updated_at datetime null,
   user_uuid text null,
-  name text null
+  name text null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
@@ -81,7 +85,8 @@ create table organizations
 (
   uuid text null,
   name text null,
-  billing_email text null
+  billing_email text null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
@@ -91,13 +96,14 @@ create table twofactor
   user_uuid text null,
   type int null,
   enabled text null,
-  data text null
+  data text null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
 create table users
 (
-  uuid text null,
+  uuid text not null,
   created_at datetime null,
   updated_at datetime null,
   email text null,
@@ -115,7 +121,8 @@ create table users
   equivalent_domains text null,
   excluded_globals text null,
   client_kdf_type int null,
-  client_kdf_iter int null
+  client_kdf_iter int null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 
@@ -135,7 +142,8 @@ create table users_organizations
   access_all text null,
   `key` text null,
   status int null,
-  type int null
+  type int null,
+  PRIMARY_KEY (uuid(255))
 )
 ;
 

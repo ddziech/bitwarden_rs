@@ -54,7 +54,7 @@ services:
       - outside
     restart: always
     ports:
-      - '80:80'
+      - '8800:80'
     depends_on:
       - db
 
