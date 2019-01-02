@@ -1,4 +1,4 @@
-create table attachments
+create table if not exists attachments
 (
   id text null,
   cipher_uuid text null,
@@ -8,9 +8,9 @@ create table attachments
 )
 ;
 
-create table ciphers
+create table if not exists ciphers
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   created_at datetime null,
   updated_at datetime null,
   user_uuid text null,
@@ -21,30 +21,28 @@ create table ciphers
   fields text null,
   data text null,
   favorite text null,
-  password_history text null,
-  PRIMARY_KEY (uuid(255))
+  password_history text null
 )
 ;
 
-create table ciphers_collections
+create table if not exists ciphers_collections
 (
   cipher_uuid text null,
   collection_uuid text null
 )
 ;
 
-create table collections
+create table if not exists collections
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   org_uuid text null,
-  name text null,
-  PRIMARY_KEY (uuid(255))
+  name text null
 )
 ;
 
-create table devices
+create table if not exists devices
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   created_at datetime null,
   updated_at datetime null,
   user_uuid text null,
@@ -52,58 +50,54 @@ create table devices
   type int null,
   push_token text null,
   refresh_token text null,
-  twofactor_remember text null,
-  PRIMARY_KEY (uuid(255))
+  twofactor_remember text null
 )
 ;
 
-create table folders
+create table if not exists folders
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   created_at datetime null,
   updated_at datetime null,
   user_uuid text null,
-  name text null,
-  PRIMARY_KEY (uuid(255))
+  name text null
 )
 ;
 
-create table folders_ciphers
+create table if not exists folders_ciphers
 (
   cipher_uuid text null,
   folder_uuid text null
 )
 ;
 
-create table invitations
+create table if not exists invitations
 (
   email text null
 )
 ;
 
-create table organizations
+create table if not exists organizations
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   name text null,
-  billing_email text null,
-  PRIMARY_KEY (uuid(255))
+  billing_email text null
 )
 ;
 
-create table twofactor
+create table if not exists twofactor
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   user_uuid text null,
   type int null,
   enabled text null,
-  data text null,
-  PRIMARY_KEY (uuid(255))
+  data text null
 )
 ;
 
-create table users
+create table if not exists users
 (
-  uuid text not null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   created_at datetime null,
   updated_at datetime null,
   email text null,
@@ -121,12 +115,11 @@ create table users
   equivalent_domains text null,
   excluded_globals text null,
   client_kdf_type int null,
-  client_kdf_iter int null,
-  PRIMARY_KEY (uuid(255))
+  client_kdf_iter int null
 )
 ;
 
-create table users_collections
+create table if not exists users_collections
 (
   user_uuid text null,
   collection_uuid text null,
@@ -134,16 +127,15 @@ create table users_collections
 )
 ;
 
-create table users_organizations
+create table if not exists users_organizations
 (
-  uuid text null,
+  uuid varchar (255) NOT null PRIMARY KEY,
   user_uuid text null,
   org_uuid text null,
   access_all text null,
   `key` text null,
   status int null,
-  type int null,
-  PRIMARY_KEY (uuid(255))
+  `type` int null
 )
 ;
 
